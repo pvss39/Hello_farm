@@ -1,0 +1,20 @@
+python-dotenv>=1.0.0
+langgraph>=0.0.20
+langchain>=0.1.0
+langchain-core>=0.1.0
+googletrans==4.0.0rc1
+requests>=2.28.0
+sentinelhub>=3.9.0
+earthengine-api>=0.1.384
+matplotlib>=3.5.0
+numpy>=1.24.0
+Pillow>=10.0.0
+streamlit>=1.30.0
+# Push notification server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+apscheduler>=3.10.0
+pytz>=2023.3
+# WhatsApp via Twilio (optional — CallMeBot works without this)
+twilio>=8.0.0
