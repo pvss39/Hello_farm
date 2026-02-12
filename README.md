@@ -1,142 +1,63 @@
 # Hello Farm | హెలో ఫార్మ్
 
-**AI-Powered Crop Monitoring for Telugu Farmers**
-
-An intelligent agricultural system that monitors 3 Jowar (sorghum) plots in Andhra using satellite imagery, weather data, and multi-agent AI - all in English and Telugu.
+**AI-Powered Crop Monitoring for  Farmers**
 
 ---
 
-## Quick Start
+## Why This Exists
 
-```bash
-# 1. Install dependencies
-pip install -r requirements.txt
+My father farms 3.5 acres of Jowar in our village, Andhra Pradesh. He makes every irrigation and pest decision with his eyes and memory — no data, no forecast, no external input.
 
-# 2. Set up API keys
-cp .env.example .env
-# Edit .env with your Sentinel Hub and OpenWeather credentials
+He's good at it. But he's working with incomplete information every single day.
 
-# 3. Initialize database (first time only)
-python setup_plots.py
+I built Hello Farm so satellite data, weather forecasts, and crop health scores reach him the only way they will — a WhatsApp message, in Telugu, every morning. No app to install. No dashboard. No learning curve.
 
-# 4. Launch the app
-streamlit run app.py
-```
-
-## Features
-
-- **Satellite Health Monitoring** - NDVI-based crop health scoring (0-100)
-- **Weather-Aware Irrigation** - Recommendations based on 3-day forecasts
-- **Dual Language** - Full English + Telugu support with auto-detection
-- **Multi-Agent Analysis** - 4 specialized AI agents coordinate decisions
-- **Uncertainty Handling** - Asks the farmer when confidence is low
-- **Health Trend Graphs** - 30-day visual health tracking per plot
-- **Local LLM Support** - Works with Ollama (llama3.2) for offline AI
-
-## Architecture
-
-```
-User (Streamlit UI)
-       |
-  FarmAgent (LangGraph 5-node workflow)
-       |
-  detect_language -> understand_intent -> execute_action -> translate -> respond
-       |                    |                   |
-  LanguageManager     LLM/Keywords      [Database, Weather, Satellite, Viz]
-                                               |
-                                    Multi-Agent Coordinator
-                                    (4 specialized agents)
-```
-
-## Project Structure
-
-```
-Hello_Farm/
-├── app.py                  # Streamlit web UI (main entry point)
-├── setup_plots.py          # Initialize database with 3 plots
-├── requirements.txt        # Python dependencies
-├── .env.example            # API key template
-├── src/
-│   ├── agent.py            # LangGraph orchestration engine
-│   ├── database.py         # SQLite persistence layer
-│   ├── translation.py      # English <-> Telugu translation
-│   ├── weather.py          # OpenWeather API integration
-│   ├── satellite.py        # NDVI calculation & health scoring
-│   ├── visualization.py    # Matplotlib graph generation
-│   ├── whatsapp.py         # WhatsApp messaging (Twilio-ready stub)
-│   ├── ollama_llm.py       # Local Ollama LLM integration
-│   ├── llm_manager.py      # Unified LLM interface (local/cloud)
-│   ├── satellite_analyzer.py # LLM-powered satellite analysis
-│   ├── multi_agent_system.py # 4-agent coordinator
-│   ├── uncertainty_handler.py # Ask farmer when unsure
-│   └── agents/             # Specialized agents
-│       ├── satellite_interpreter.py
-│       ├── weather_analyst.py
-│       ├── crop_health_diagnostic.py
-│       └── farmer_communication.py
-├── data/
-│   └── farm.db             # SQLite database
-├── outputs/                # Generated graphs (auto-cleaned)
-└── tests/                  # Test suite (8/8 passing)
-```
-
-## Farm Plots
-
-| Plot | Telugu | Acres | Location |
-|------|--------|-------|----------|
-| Thurpu Polam | తూర్పు పొలం | 1.75 | Emani Duggirala, AP (update with actual GPS) |
-| Athota Road Polam | ఆత్తోట రోడ్ పొలం | 1.0 | Emani Duggirala, AP (update with actual GPS) |
-| Munnagi Road Polam | ముణగి రోడ్ పొలం | 0.8 | Emani Duggirala, AP (update with actual GPS) |
-
-All plots: Jowar (జొన్న), 7-day irrigation cycle, Emani Duggirala Mandal, Andhra Pradesh
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| UI | Streamlit |
-| Agent Framework | LangGraph |
-| Database | SQLite |
-| Satellite Data | Sentinel-2 (mock for MVP) |
-| Weather | OpenWeather API |
-| Visualization | Matplotlib |
-| LLM | Ollama (local) / Claude API (cloud) |
-| Language | Python 3.10+ |
-
-## NDVI Health Scoring
-
-| NDVI Range | Health Score | Status |
-|-----------|-------------|--------|
-| 0.0 - 0.2 | 0 - 30 | Stress (needs attention) |
-| 0.2 - 0.4 | 30 - 60 | Moderate (monitor closely) |
-| 0.4 - 0.8 | 60 - 100 | Healthy (good growth) |
-
-## Optional: Ollama Setup (Local AI)
-
-```bash
-# Install Ollama from https://ollama.com
-ollama pull llama3.2:3b
-ollama serve
-```
-
-The system auto-detects Ollama. If unavailable, it falls back to keyword-based detection.
-
-## API Keys
-
-| Service | Purpose | Get It |
-|---------|---------|--------|
-| OpenWeather | Weather + forecasts | [openweathermap.org/api](https://openweathermap.org/api) |
-| Sentinel Hub | Satellite imagery | [sentinel-hub.com](https://www.sentinel-hub.com/) |
-| Claude API | Cloud LLM (optional) | [console.anthropic.com](https://console.anthropic.com/) |
-
-## Tests
-
-```bash
-python -m pytest tests/ -v
-```
-
-8/8 tests passing: Database, Language Detection, Translation, Weather, Satellite, Visualization, Intent Detection, Full Pipeline.
+This is an MVP. There's a long way to go.
 
 ---
 
-*రైతులకు AI శక్తి | Empowering farmers with AI*
+## What It Does
+
+Satellite imagery → NDVI crop health score → weather-aware irrigation recommendation → WhatsApp message in Telugu + English, every morning at 7AM. Alert within 6 hours if health drops.
+
+---
+
+## How I Used AI & Agents
+
+A LangGraph 5-node workflow orchestrates 4 specialized agents (Satellite Interpreter, Weather Analyst, Crop Health Diagnostic, Farmer Communication) — each handling one domain, handing off to a coordinator that writes the final advisory in Telugu and English. Satellite selection is orbit-aware; uncertainty is flagged, not guessed.
+
+---
+
+## What You Receive
+
+| When | What |
+|------|------|
+| 7:00 AM daily | Health score for all 3 plots + irrigation call |
+| Every 6 hours | Satellite pass check — alert if NDVI drops |
+| Sunday 8:00 AM | Week-in-review with trend |
+
+All messages in Telugu + English. NDVI heatmap image attached when fresh data is available.
+
+---
+
+## Present and Future
+
+**Right now:** My father uses this. One farmer. Three plots. The system works — messages arrive, NDVI is real, the advisory is crop-stage aware. But the satellite data is still partially mocked pending full GEE authentication, the GPS coordinates on two plots are estimates, and the AI advisory engine is rule-based, not model-trained. It's functional. It is not finished.
+
+**The real problem this is pointing at:** Agriculture is at a demographic breaking point. The farmers who hold decades of field knowledge — soil feel, pest timing, rain patterns — are aging out. Their children are educated, often urban, and lack that embodied experience. Meanwhile global food demand keeps climbing and small farms (under 2 acres, which is most of Indian agriculture) still make decisions the way they did 30 years ago — by eye, by memory, by asking the neighbor.
+
+Precision agriculture tools exist. They are built for large commercial farms in the US and Europe. They are not built for a 1.75-acre Jowar plot in Andhra Pradesh where the farmer reads Telugu and doesn't own a laptop.
+
+Hello Farm is not solving that problem yet. It is one attempt at a much smaller version of it — make the data that already exists (Sentinel-2 is free, OpenWeather is free) actually reach the person who needs it, in the form they can use.
+
+The gap between what's possible technically and what actually reaches farmers in India is enormous. This project is one step in that direction, with a lot more steps remaining.
+
+---
+
+## NDVI Health Reference
+
+| NDVI | Score | Status |
+|------|-------|--------|
+| 0.0 – 0.2 | 0–30 | Stress — needs attention |
+| 0.2 – 0.4 | 30–60 | Moderate — monitor closely |
+| 0.4 – 0.8 | 60–100 | Healthy — good growth |

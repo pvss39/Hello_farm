@@ -383,6 +383,7 @@ scheduler.add_job(
     id="daily_morning",
     name="Daily 7 AM morning update",
     replace_existing=True,
+    misfire_grace_time=3600,   # fire within 1 hour of missed 7 AM
 )
 
 scheduler.add_job(
@@ -391,6 +392,7 @@ scheduler.add_job(
     id="satellite_check",
     name="Satellite check every 6 hours",
     replace_existing=True,
+    misfire_grace_time=3600,   # fire within 1 hour of missed slot
 )
 
 scheduler.add_job(
@@ -399,6 +401,7 @@ scheduler.add_job(
     id="weekly_summary",
     name="Sunday 8 AM weekly summary",
     replace_existing=True,
+    misfire_grace_time=7200,   # fire within 2 hours of missed Sunday 8 AM
 )
 
 
