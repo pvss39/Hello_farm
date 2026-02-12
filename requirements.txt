@@ -18,3 +18,5 @@ apscheduler>=3.10.0
 pytz>=2023.3
 # WhatsApp via Twilio (optional — CallMeBot works without this)
 twilio>=8.0.0
+# Image hosting for WhatsApp media attachments
+cloudinary>=1.36.0

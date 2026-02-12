@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.database import FarmDatabase
 from src.satellite_multi import MultiSatelliteManager
-from src.visualization import GraphGenerator
 from src.weather import WeatherService
 from src.whatsapp import WhatsAppService
 
@@ -29,20 +28,18 @@ db        = FarmDatabase()
 db.init_database()
 
 multi_sat = MultiSatelliteManager()
-graphs    = GraphGenerator()
 weather   = WeatherService()
 whatsapp  = WhatsAppService()
 
 IST = pytz.timezone("Asia/Kolkata")
 
-# Recipients — father + observer
-RECIPIENTS: List[str] = [
-    r for r in [
-        os.getenv("FATHER_WHATSAPP", ""),
-        os.getenv("OBSERVER_WHATSAPP", ""),
-    ]
-    if r.strip()
+# Recipients — farmer + father + observer (deduped)
+_all_recipients = [
+    os.getenv("FARMER_WHATSAPP", ""),
+    os.getenv("FATHER_WHATSAPP", ""),
+    os.getenv("OBSERVER_WHATSAPP", ""),
 ]
+RECIPIENTS: List[str] = list(dict.fromkeys(r.strip() for r in _all_recipients if r.strip()))
 
 app = FastAPI(
     title="Hello Farm Push Server",
@@ -181,17 +178,20 @@ def _send_satellite_notification(plot: Dict, sat: Dict) -> None:
         history = db.get_satellite_history(plot["name_english"], days=30)
         trend_te, trend_en, trend_emoji = _compute_trend(ndvi, history)
 
-        # Generate graph (passes telugu name as required by GraphGenerator)
-        graph_path: Optional[str] = None
+        # LLM-style advisory: current vs ideal Jowar condition
+        advisory_te, advisory_en = _jowar_advisory(ndvi, trend_en, trend_emoji)
+
+        # Satellite NDVI heatmap image of the plot
+        corners    = plot.get("boundary_coords")   # stored as list or None
+        image_path: Optional[str] = None
         try:
-            graph_path = graphs.create_health_trend_graph(
-                plot_name=plot["name_english"],
-                plot_name_te=plot.get("name_telugu", ""),
-                ndvi_history=_history_to_graph_format(history),
-                days=30,
+            image_path = multi_sat.get_ndvi_image(
+                latitude=plot["center_latitude"],
+                longitude=plot["center_longitude"],
+                corners=corners,
             )
         except Exception as exc:
-            print(f"  Graph generation error: {exc}")
+            print(f"  NDVI image error: {exc}")
 
         message = (
             f"🛰️ {sat['satellite']} నివేదిక\n\n"
@@ -200,16 +200,18 @@ def _send_satellite_notification(plot: Dict, sat: Dict) -> None:
             f"📸 NDVI: {ndvi:.3f}\n"
             f"📅 తేదీ: {sat['date']} ({sat['age_days']} రోజుల క్రితం)\n"
             f"☁️ మేఘాలు: {sat['cloud_cover']:.0f}%\n\n"
+            f"{advisory_te}\n\n"
             f"---\n\n"
             f"🛰️ {sat['satellite']} Report\n\n"
             f"{plot['name_english']}:\n"
             f"{trend_emoji} Health: {health_score}/100 ({trend_en})\n"
             f"📸 NDVI: {ndvi:.3f}\n"
             f"📅 Date: {sat['date']} ({sat['age_days']} days ago)\n"
-            f"☁️ Clouds: {sat['cloud_cover']:.0f}%"
+            f"☁️ Clouds: {sat['cloud_cover']:.0f}%\n\n"
+            f"{advisory_en}"
         )
 
-        _broadcast(message, graph_path)
+        _broadcast(message, image_path)
 
         # Save reading to satellite_history
         db.save_satellite_reading(
@@ -253,7 +255,6 @@ def send_weekly_summary() -> None:
             history = db.get_satellite_history(plot["name_english"], days=7)
 
             if len(history) >= 2:
-                old_ndvi   = history[-1].get("ndvi_value", 0.5)
                 new_ndvi   = history[0].get("ndvi_value", 0.5)
                 _, trend_en, emoji = _compute_trend(new_ndvi,
                                                     history[1:])
@@ -280,6 +281,68 @@ def _broadcast(message: str, image_path: Optional[str] = None) -> None:
     results = whatsapp.send_to_multiple(message, RECIPIENTS, image_path)
     for r in results:
         print(f"  → {r.get('number','?')}: {r.get('status','?')}")
+
+
+def _jowar_advisory(
+    ndvi: float,
+    trend_en: str,
+    trend_emoji: str,
+) -> tuple:
+    """
+    Compare current NDVI against ideal Jowar range for the current growth stage.
+    Returns (telugu_text, english_text).
+
+    AP Jowar calendar:
+      Kharif — sown Jun-Jul, harvest Oct-Nov
+      Rabi   — sown Oct-Nov, harvest Mar-Apr
+    February = rabi grain-filling stage → ideal NDVI 0.45-0.65
+    """
+    month = datetime.now(IST).month
+
+    if month in (6, 7):
+        stage_en = "germination";             ideal_lo, ideal_hi = 0.15, 0.25
+    elif month in (8, 9):
+        stage_en = "vegetative growth";       ideal_lo, ideal_hi = 0.35, 0.55
+    elif month in (10, 11):
+        stage_en = "tillering (rabi sowing)"; ideal_lo, ideal_hi = 0.40, 0.65
+    elif month in (12, 1):
+        stage_en = "vegetative (rabi)";       ideal_lo, ideal_hi = 0.45, 0.65
+    elif month in (2, 3):
+        stage_en = "grain filling (rabi)";    ideal_lo, ideal_hi = 0.45, 0.65
+    else:  # April-May
+        stage_en = "maturity / harvest";      ideal_lo, ideal_hi = 0.25, 0.45
+
+    if ndvi < ideal_lo - 0.05:
+        status_en = "Below ideal — crop stress likely"
+        status_te = "ఆదర్శ స్థాయి కంటే తక్కువ — పంట ఒత్తిడిలో ఉండవచ్చు"
+        action_en = "Check soil moisture now. Irrigate if no rain forecast in 3 days."
+        action_te = "వెంటనే నేల తేమ చూడండి. 3 రోజుల్లో వర్షం లేకుంటే నీరు పెట్టండి."
+    elif ndvi > ideal_hi + 0.05:
+        status_en = "Above ideal — excellent growth"
+        status_te = "ఆదర్శ స్థాయి కంటే ఎక్కువ — అద్భుతమైన వృద్ధి"
+        action_en = "Crop is thriving. Maintain current schedule. Watch for lodging."
+        action_te = "పంట బాగా పెరుగుతోంది. ప్రస్తుత షెడ్యూల్ కొనసాగించండి."
+    else:
+        status_en = "Within ideal range — healthy"
+        status_te = "ఆదర్శ పరిధిలో ఉంది — ఆరోగ్యంగా ఉంది"
+        action_en = "Crop is on track. Continue regular irrigation and pest monitoring."
+        action_te = "పంట సరిగ్గా ఉంది. సాధారణ నీటిపారుదల మరియు పెస్ట్ పర్యవేక్షణ కొనసాగించండి."
+
+    te = (
+        f"🌾 పంట సలహా — {stage_en}\n"
+        f"   ఈ దశలో ఆదర్శ NDVI: {ideal_lo:.2f}–{ideal_hi:.2f}\n"
+        f"   ప్రస్తుత NDVI: {ndvi:.3f}  {status_te}\n"
+        f"   ధోరణి: {trend_emoji} {trend_en}\n"
+        f"   ➡ {action_te}"
+    )
+    en = (
+        f"🌾 Crop Advisory — {stage_en.title()}\n"
+        f"   Ideal NDVI this stage: {ideal_lo:.2f}–{ideal_hi:.2f}\n"
+        f"   Current NDVI: {ndvi:.3f}  {status_en}\n"
+        f"   Trend: {trend_emoji} {trend_en.title()}\n"
+        f"   ➡ {action_en}"
+    )
+    return te, en
 
 
 def _ndvi_to_health(ndvi: float) -> int:
@@ -310,16 +373,6 @@ def _telugu_name(plots: List[Dict], english_name: str) -> str:
             return p.get("name_telugu", english_name)
     return english_name
 
-
-def _history_to_graph_format(history: List[Dict]) -> List[Dict]:
-    result = []
-    for row in reversed(history):  # oldest first
-        result.append({
-            "date":         row.get("check_date", ""),
-            "ndvi":         row.get("ndvi_value", 0.5),
-            "health_score": row.get("health_score", 50),
-        })
-    return result
 
 
 scheduler = BackgroundScheduler(timezone=IST)

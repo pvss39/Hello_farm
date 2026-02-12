@@ -1,6 +1,5 @@
 
 import os
-import base64
 import requests
 import urllib.parse
 from pathlib import Path
@@ -23,7 +22,7 @@ class WhatsAppService:
                                         "whatsapp:+14155238886").strip()
 
         self._callmebot_key = os.getenv("CALLMEBOT_API_KEY", "").strip()
-        self._imgur_client  = os.getenv("IMGUR_CLIENT_ID", "").strip()
+        self._cloudinary_url = os.getenv("CLOUDINARY_URL", "").strip()
 
         if self._twilio_sid and self._twilio_token:
             self.mode = "twilio"
@@ -94,7 +93,7 @@ class WhatsAppService:
 
             image_url = None
             if image_path and Path(image_path).exists():
-                image_url = self.upload_image_to_imgur(image_path)
+                image_url = self.upload_image_to_cloudinary(image_path)
                 if image_url:
                     params["media_url"] = image_url  # type: ignore[assignment]
                 else:
@@ -146,9 +145,9 @@ class WhatsAppService:
         print("  To activate: add CALLMEBOT_API_KEY or TWILIO_* keys to .env")
         return {"status": "mock", "message_sid": None, "image_url": None}
 
-    def upload_image_to_imgur(self, image_path: str) -> Optional[str]:
-        if not self._imgur_client:
-            print("[WhatsApp] IMGUR_CLIENT_ID not set — cannot upload image")
+    def upload_image_to_cloudinary(self, image_path: str) -> Optional[str]:
+        if not self._cloudinary_url:
+            print("[WhatsApp] CLOUDINARY_URL not set — cannot upload image")
             return None
 
         if not Path(image_path).exists():
@@ -156,26 +155,25 @@ class WhatsAppService:
             return None
 
         try:
-            with open(image_path, "rb") as f:
-                image_data = base64.b64encode(f.read())
+            import os as _os
+            _os.environ["CLOUDINARY_URL"] = self._cloudinary_url
+            import cloudinary
+            import cloudinary.uploader
 
-            response = requests.post(
-                "https://api.imgur.com/3/image",
-                headers={"Authorization": f"Client-ID {self._imgur_client}"},
-                data={"image": image_data, "type": "base64"},
-                timeout=30,
+            result = cloudinary.uploader.upload(
+                image_path,
+                folder="hello_farm",
+                resource_type="image",
             )
+            url = result.get("secure_url")
+            print(f"[WhatsApp] Cloudinary upload OK: {url}")
+            return url
 
-            if response.status_code == 200:
-                url = response.json()["data"]["link"]
-                print(f"[WhatsApp] Imgur upload OK: {url}")
-                return url
-            else:
-                print(f"[WhatsApp] Imgur upload failed: {response.text[:120]}")
-                return None
-
+        except ImportError:
+            print("[WhatsApp] cloudinary package not installed — run: pip install cloudinary")
+            return None
         except Exception as e:
-            print(f"[WhatsApp] Imgur error: {e}")
+            print(f"[WhatsApp] Cloudinary error: {e}")
             return None
 
     def format_phone(self, phone: str) -> str:

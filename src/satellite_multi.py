@@ -158,6 +158,90 @@ class MultiSatelliteManager:
 
         return max(scored, key=lambda x: x["score"])
 
+    def get_ndvi_image(
+        self,
+        latitude: float,
+        longitude: float,
+        corners: Optional[list] = None,
+        output_path: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Generate a false-color NDVI heatmap image for the plot.
+
+        Uses GEE's getThumbURL — returns a local JPEG file path, or None if
+        GEE is not available / no recent image found.
+
+        Palette: red (stressed, NDVI≈0) → yellow → green (healthy, NDVI≈0.8)
+        """
+        if not self.initialized:
+            print("[MultiSat] GEE not initialized — cannot generate NDVI image")
+            return None
+
+        try:
+            import ee          # type: ignore[import-untyped]
+            import requests
+            from pathlib import Path
+
+            # Build geometry — polygon from corners if available, else 200m buffer
+            if corners and len(corners) >= 3:
+                ring = [[c["lon"], c["lat"]] for c in corners]
+                ring.append(ring[0])   # close polygon
+                geometry = ee.Geometry.Polygon([ring])
+            else:
+                geometry = ee.Geometry.Point([longitude, latitude]).buffer(200)
+
+            end_date   = datetime.now()
+            start_date = end_date - timedelta(days=30)
+
+            collection = (
+                ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                .filterBounds(geometry)
+                .filterDate(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
+                .sort("CLOUDY_PIXEL_PERCENTAGE")
+            )
+
+            if collection.size().getInfo() == 0:
+                print("[MultiSat] No cloud-free S2 image in last 30 days — no thumbnail")
+                return None
+
+            image    = collection.first()
+            ndvi_img = image.normalizedDifference(["B8", "B4"])
+
+            viz_params = {
+                "min":        0.0,
+                "max":        0.8,
+                "palette":    ["#d73027", "#f46d43", "#fdae61", "#fee08b", "#a6d96a", "#1a9850"],
+                "region":     geometry.getInfo(),
+                "format":     "jpg",
+                "dimensions": 512,
+            }
+
+            url      = ndvi_img.getThumbURL(viz_params)
+            response = requests.get(url, timeout=45)
+
+            if response.status_code != 200:
+                print(f"[MultiSat] Thumbnail download failed: HTTP {response.status_code}")
+                return None
+
+            # Save to data/images/
+            if output_path is None:
+                img_dir = Path("data") / "images"
+                img_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path = str(img_dir / f"ndvi_{ts}.jpg")
+
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, "wb") as fh:
+                fh.write(response.content)
+
+            print(f"[MultiSat] NDVI image saved: {output_path}")
+            return output_path
+
+        except Exception as exc:
+            print(f"[MultiSat] Image generation error: {exc}")
+            return None
+
     def _fallback(self, latitude: float, longitude: float) -> Optional[Dict]:
         try:
             from src.satellite import SatelliteMonitor
@@ -186,6 +270,7 @@ class MultiSatelliteManager:
     def _init_gee(self) -> bool:
         try:
             import ee  # type: ignore[import-untyped]
+            import os
             import pathlib
 
             creds = pathlib.Path.home() / ".config" / "earthengine" / "credentials"
@@ -193,7 +278,8 @@ class MultiSatelliteManager:
                 print("[MultiSat] GEE credentials not found — run: earthengine authenticate")
                 return False
 
-            ee.Initialize()
+            project = os.getenv("GEE_PROJECT", "my-spread-sheet-473920")
+            ee.Initialize(project=project)
             print("[MultiSat] Google Earth Engine: connected")
             return True
 

@@ -25,9 +25,17 @@ def setup_plots() -> None:
             "crop_en": "Jowar",
             "crop_te": "జొన్న",
             "size": 1.0,
-            "lat": 16.3720,   # TODO: replace with actual GPS
-            "lon": 80.7230,   # Emani Duggirala Mandal, AP
+            "lat": 16.322104,
+            "lon": 80.667237,
             "freq": 7,
+            "corners": [
+                {"lat": 16.322454, "lon": 80.666894},
+                {"lat": 16.322228, "lon": 80.666828},
+                {"lat": 16.322179, "lon": 80.667033},
+                {"lat": 16.321829, "lon": 80.667020},
+                {"lat": 16.321687, "lon": 80.667791},
+                {"lat": 16.322247, "lon": 80.667856},
+            ],
         },
         {
             "name_en": "Munnagi Road Polam",
@@ -52,6 +60,7 @@ def setup_plots() -> None:
                 plot["lat"],
                 plot["lon"],
                 plot["freq"],
+                corners=plot.get("corners"),
             )
             print(f"✓ అందించిన పొలం | Plot Added: {plot['name_en']} ({plot['name_te']}) - ID: {plot_id}")
         except Exception as e:
