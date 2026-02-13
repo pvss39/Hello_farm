@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -9,6 +11,10 @@ from typing import Dict, List, Optional
 import pytz
 import uvicorn
 from dotenv import load_dotenv
+
+# Only send updates for this plot for now — others added when ready
+ACTIVE_PLOT = "Athota Road Polam"
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -21,6 +27,7 @@ from src.database import FarmDatabase
 from src.satellite_multi import MultiSatelliteManager
 from src.weather import WeatherService
 from src.whatsapp import WhatsAppService
+from src.telegram_service import TelegramService
 
 print("Initialising Hello Farm Push Server...")
 
@@ -30,8 +37,23 @@ db.init_database()
 multi_sat = MultiSatelliteManager()
 weather   = WeatherService()
 whatsapp  = WhatsAppService()
+telegram  = TelegramService()
 
 IST = pytz.timezone("Asia/Kolkata")
+
+# Tracks whether today's morning update was sent (persists across restarts)
+_FLAG_FILE = Path(__file__).parent / "data" / ".last_morning_send"
+
+
+def _mark_morning_sent() -> None:
+    _FLAG_FILE.parent.mkdir(exist_ok=True)
+    _FLAG_FILE.write_text(datetime.now(IST).strftime("%Y-%m-%d"))
+
+
+def _morning_sent_today() -> bool:
+    if not _FLAG_FILE.exists():
+        return False
+    return _FLAG_FILE.read_text().strip() == datetime.now(IST).strftime("%Y-%m-%d")
 
 # Recipients — farmer + father + observer (deduped)
 _all_recipients = [
@@ -41,10 +63,41 @@ _all_recipients = [
 ]
 RECIPIENTS: List[str] = list(dict.fromkeys(r.strip() for r in _all_recipients if r.strip()))
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # ── startup ──
+    scheduler.start()
+    threading.Thread(target=_startup_catchup, daemon=True).start()
+    print("\n" + "=" * 60)
+    print("HELLO FARM PUSH SERVER STARTED")
+    print("=" * 60)
+    print(f"  GEE         : {'connected' if multi_sat.initialized else 'fallback mode'}")
+    print(f"  WhatsApp    : {whatsapp.mode}")
+    print(f"  Recipients  : {len(RECIPIENTS)} ({', '.join(RECIPIENTS) or 'none'})")
+    print(f"  Schedules   :")
+    print(f"    - Daily update   : 7:00 AM IST")
+    print(f"    - Satellite check : every 6 hours (30d lookback on startup)")
+    print(f"    - Weekly summary  : Sundays 8:00 AM IST")
+    print(f"  Endpoints   :")
+    print(f"    GET /                  health check")
+    print(f"    GET /trigger/morning   manual morning send")
+    print(f"    GET /trigger/satellite manual satellite check")
+    print(f"    GET /trigger/weekly    manual weekly send")
+    print("=" * 60 + "\n")
+
+    yield  # server is running
+
+    # ── shutdown ──
+    scheduler.shutdown()
+    print("Push server stopped")
+
+
 app = FastAPI(
     title="Hello Farm Push Server",
     description="Automated WhatsApp crop-monitoring notifications",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
@@ -84,31 +137,60 @@ def send_morning_update() -> None:
     print(f"{'='*60}")
 
     try:
-        plots = db.get_all_plots()
+        all_plots = db.get_all_plots()
+        plots = [p for p in all_plots if p["name_english"] == ACTIVE_PLOT]
         if not plots:
-            print("No plots in database — skipping")
+            print("No plots in database -- skipping")
             return
 
-        te = "శుభోదయం! 🌅\n\n"
-        en = "Good morning! 🌅\n\n"
+        te, en = _time_greeting()
+        te += "\n\n"
+        en += "\n\n"
 
-        # Irrigation check
+        # Irrigation check — only for active plot
         due = db.check_irrigation_needed()
+        due = [p for p in due if p["name"] == ACTIVE_PLOT]
         if due:
             te += "💧 ఈరోజు నీరు పోయాల్సిన పొలాలు:\n"
             en += "💧 Plots needing water today:\n"
             for p in due:
-                te += f"  • {_telugu_name(plots, p['name'])} "
+                te += f"  * {_telugu_name(plots, p['name'])} "
                 te += f"({p['days_overdue']}d overdue)\n"
-                en += f"  • {p['name']} — {p['days_overdue']} days overdue\n"
+                en += f"  * {p['name']} -- {p['days_overdue']} days overdue\n"
         else:
-            te += "✅ అన్ని పొలాలు బాగున్నాయి\n"
-            en += "✅ All plots are on schedule\n"
+            te += "✅ పొలం బాగుంది\n"
+            en += "✅ Plot is on schedule\n"
 
         te += "\n"
         en += "\n"
 
-        # Weather for first plot
+        # Latest satellite NDVI for active plot
+        try:
+            p0 = plots[0]
+            sat = multi_sat.get_latest_ndvi(
+                latitude=p0["center_latitude"],
+                longitude=p0["center_longitude"],
+                days_lookback=30,
+            )
+            if sat:
+                ndvi         = sat["ndvi"]
+                health_score = _ndvi_to_health(ndvi)
+                history      = db.get_satellite_history(p0["name_english"], days=30)
+                trend_te, trend_en, trend_emoji = _compute_trend(ndvi, history)
+                advisory_te, advisory_en = _jowar_advisory(ndvi, trend_en, trend_emoji)
+                te += (f"🛰️ పొలం ఆరోగ్యం ({sat['satellite']}, {sat['date']}):\n"
+                       f"{trend_emoji} NDVI: {ndvi:.3f} | స్కోర్: {health_score}/100 ({trend_te})\n"
+                       f"{advisory_te}\n\n")
+                en += (f"🛰️ Crop Health ({sat['satellite']}, {sat['date']}):\n"
+                       f"{trend_emoji} NDVI: {ndvi:.3f} | Score: {health_score}/100 ({trend_en})\n"
+                       f"{advisory_en}\n\n")
+            else:
+                te += "🛰️ ఉపగ్రహ డేటా అందుబాటులో లేదు\n\n"
+                en += "🛰️ No satellite data available\n\n"
+        except Exception as exc:
+            print(f"  Satellite fetch error: {exc}")
+
+        # Weather for active plot
         try:
             p0 = plots[0]
             w  = weather.get_current_weather(
@@ -127,27 +209,30 @@ def send_morning_update() -> None:
 
         message = te + "\n---\n\n" + en
         _broadcast(message)
+        _mark_morning_sent()
         print("Morning update sent")
 
     except Exception as exc:
         print(f"Morning update failed: {exc}")
 
 
-def check_satellite_updates() -> None:
+def check_satellite_updates(days_lookback: int = 7) -> None:
     print(f"\n{'='*60}")
-    print(f"SATELLITE CHECK  {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}")
+    print(f"SATELLITE CHECK  {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}"
+          f"  (lookback={days_lookback}d)")
     print(f"{'='*60}")
 
     try:
-        plots = db.get_all_plots()
+        plots = [p for p in db.get_all_plots()
+                 if p["name_english"] == ACTIVE_PLOT]
 
         for plot in plots:
-            print(f"\nChecking {plot['name_english']}…")
+            print(f"\nChecking {plot['name_english']}...")
 
             sat = multi_sat.get_latest_ndvi(
                 latitude=plot["center_latitude"],
                 longitude=plot["center_longitude"],
-                days_lookback=7,
+                days_lookback=days_lookback,
             )
 
             if not sat:
@@ -243,9 +328,10 @@ def send_weekly_summary() -> None:
     print(f"{'='*60}")
 
     try:
-        plots = db.get_all_plots()
+        plots = [p for p in db.get_all_plots()
+                 if p["name_english"] == ACTIVE_PLOT]
         if not plots:
-            print("No plots — skipping weekly summary")
+            print("No plots -- skipping weekly summary")
             return
 
         te = "📊 వారపు సారాంశం 📊\n\n"
@@ -273,6 +359,13 @@ def send_weekly_summary() -> None:
 
 
 def _broadcast(message: str, image_path: Optional[str] = None) -> None:
+    # ── Telegram (primary — no opt-in restrictions) ──────────────────
+    if telegram.enabled:
+        sent = telegram.broadcast(message, image_path)
+        print(f"  Telegram: {sent}/{len(telegram.chat_ids)} delivered")
+        return
+
+    # ── Twilio WhatsApp (fallback — kept but inactive when Telegram works) ──
     if not RECIPIENTS:
         print("  No recipients configured — printing to console")
         whatsapp._send_mock("console", message, image_path)
@@ -367,6 +460,19 @@ def _compute_trend(
         return "స్థిరంగా ఉంది", "stable",    "➡️"
 
 
+def _time_greeting() -> tuple:
+    """Return (telugu_greeting, english_greeting) based on current IST hour."""
+    hour = datetime.now(IST).hour
+    if 5 <= hour < 12:
+        return "శుభోదయం! 🌅", "Good morning! 🌅"
+    elif 12 <= hour < 17:
+        return "శుభ మధ్యాహ్నం! ☀️", "Good afternoon! ☀️"
+    elif 17 <= hour < 21:
+        return "శుభ సాయంత్రం! 🌇", "Good evening! 🌇"
+    else:
+        return "శుభ రాత్రి! 🌙", "Good night! 🌙"
+
+
 def _telugu_name(plots: List[Dict], english_name: str) -> str:
     for p in plots:
         if p.get("name_english", "") == english_name:
@@ -405,31 +511,27 @@ scheduler.add_job(
 )
 
 
-@app.on_event("startup")
-async def startup() -> None:
-    scheduler.start()
-    print("\n" + "=" * 60)
-    print("HELLO FARM PUSH SERVER STARTED")
-    print("=" * 60)
-    print(f"  GEE         : {'connected' if multi_sat.initialized else 'fallback mode'}")
-    print(f"  WhatsApp    : {whatsapp.mode}")
-    print(f"  Recipients  : {len(RECIPIENTS)} ({', '.join(RECIPIENTS) or 'none'})")
-    print(f"  Schedules   :")
-    print(f"    - Daily update  : 7:00 AM IST")
-    print(f"    - Satellite check: every 6 hours")
-    print(f"    - Weekly summary : Sundays 8:00 AM IST")
-    print(f"  Endpoints   :")
-    print(f"    GET /                  health check")
-    print(f"    GET /trigger/morning   manual morning send")
-    print(f"    GET /trigger/satellite manual satellite check")
-    print(f"    GET /trigger/weekly    manual weekly send")
-    print("=" * 60 + "\n")
+def _startup_catchup() -> None:
+    """
+    Runs in a background thread 5 seconds after server starts.
 
+    Two jobs:
+    1. If today's morning update was missed (system was off at 7 AM) → send now.
+    2. Run a satellite check with 30-day lookback so we always send the latest
+       available pass even if the system was offline for a week.
+    """
+    time.sleep(5)
 
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    scheduler.shutdown()
-    print("Push server stopped")
+    if not _morning_sent_today():
+        print("[Startup] Morning update not sent today — catching up now...")
+        send_morning_update()
+    else:
+        print("[Startup] Morning update already sent today — no catch-up needed")
+
+    # Always run a satellite check on startup with wide lookback
+    # so the latest pass (1–30 days back) is delivered immediately.
+    print("[Startup] Running satellite catch-up (30-day lookback)...")
+    check_satellite_updates(days_lookback=30)
 
 
 if __name__ == "__main__":

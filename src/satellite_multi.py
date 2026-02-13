@@ -67,7 +67,7 @@ class MultiSatelliteManager:
         geometry = point.buffer(buffer_meters)
 
         print(f"\n[MultiSat] Searching {latitude:.4f}, {longitude:.4f} "
-              f"| {date_range[0]} → {date_range[1]}")
+              f"| {date_range[0]} to {date_range[1]}")
 
         candidates: List[Dict] = []
 
